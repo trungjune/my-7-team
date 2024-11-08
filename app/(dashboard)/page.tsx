@@ -34,40 +34,54 @@ export default function TeamGenerator() {
   const [numberOfTeams, setNumberOfTeams] = useState(2)
   const [bulkParticipants, setBulkParticipants] = useState('')
   const [name, setName] = useState('')
-  const [skill, setSkill] = useState('3') // Giá trị mặc định cho kỹ năng
-  const [position, setPosition] = useState<Position>('ST') // Giá trị mặc định cho vị trí
+  const [skill, setSkill] = useState('3')
+  const [position, setPosition] = useState<Position>('ST')
 
   const addParticipant = (name: string, skill: number, position: Position) => {
     if (name) {
-      setParticipants([...participants, { name, skill, position }])
+      setParticipants(prev => [...prev, { name, skill, position }])
     }
   }
 
   const removeParticipant = (index: number) => {
-    const updatedParticipants = participants.filter((_, i) => i !== index)
-    setParticipants(updatedParticipants)
+    setParticipants(prev => prev.filter((_, i) => i !== index))
   }
 
   const updateParticipant = (index: number, field: keyof Participant, value: string | number) => {
-    const updatedParticipants = [...participants]
-    if (field === 'skill') {
-      updatedParticipants[index][field] = value as number
-    } else if (field === 'position') {
-      updatedParticipants[index][field] = value as Position
-    } else {
-      updatedParticipants[index][field] = value as string
-    }
-    setParticipants(updatedParticipants)
+    setParticipants(prev => {
+      const updated = [...prev]
+      // Remove validation for name field to allow Vietnamese characters
+      if (field === 'name') {
+        updated[index][field] = value as string
+      } else if (field === 'skill') {
+        updated[index][field] = Number(value)
+      } else if (field === 'position') {
+        updated[index][field] = value as Position
+      }
+      return updated
+    })
   }
 
-  const parseParticipantString = (str: string): Participant => {
-    const parts = str.split(/[\s,;-]+/).filter(Boolean)
-    const name = parts[0]
+  // For bulk import, update the name pattern to include Vietnamese characters
+  const parseParticipantString = (str: string): Participant | null => {
+    const parts = str.match(/[^\s"]+|"([^"]*)"/g)?.map(part => part.replace(/"/g, '').trim()) || []
+    if (parts.length < 2) return null
+
+    const dataStartIndex = parts.findIndex(
+      part => !isNaN(Number(part)) || Object.keys(positionNames).includes(part.toUpperCase())
+    )
+    if (dataStartIndex === -1) return null
+
+    const name = parts.slice(0, dataStartIndex).join(' ').trim()
+    const remainingParts = parts.slice(dataStartIndex)
+
+    // Updated pattern to properly handle Vietnamese characters
+    if (!name) return null
+
     let skill = 3
     let position: Position = 'ST'
 
-    for (let i = 1; i < parts.length; i++) {
-      const part = parts[i]
+    for (const part of remainingParts) {
       if (!isNaN(Number(part))) {
         skill = Number(part)
       } else if (Object.keys(positionNames).includes(part.toUpperCase())) {
@@ -79,41 +93,21 @@ export default function TeamGenerator() {
   }
 
   const importParticipants = () => {
-    // Validate empty input
-    if (!bulkParticipants || bulkParticipants.trim() === '') {
+    if (!bulkParticipants.trim()) {
       alert('Vui lòng nhập dữ liệu người tham gia')
       return
     }
 
-    try {
-      const lines = bulkParticipants.split('\n')
+    const lines = bulkParticipants.split('\n')
+    const newParticipants = lines.map(parseParticipantString).filter((p): p is Participant => p !== null)
 
-      // Validate if there are any lines
-      if (lines.length === 0) {
-        alert('Dữ liệu không hợp lệ. Vui lòng nhập theo định dạng yêu cầu')
-        return
-      }
-
-      const newParticipants = lines.map(parseParticipantString).filter(p => {
-        // Additional validation for each participant
-        if (!p || !p.name || p.name.trim() === '') {
-          return false
-        }
-        return true
-      })
-
-      // Validate if any valid participants were parsed
-      if (newParticipants.length === 0) {
-        alert('Không tìm thấy dữ liệu người tham gia hợp lệ')
-        return
-      }
-
-      setParticipants([...participants, ...newParticipants])
-      setBulkParticipants('')
-    } catch (error) {
-      console.error('Lỗi khi import:', error)
-      alert('Đã xảy ra lỗi khi xử lý dữ liệu. Vui lòng kiểm tra lại định dạng.')
+    if (newParticipants.length === 0) {
+      alert('Không tìm thấy dữ liệu người tham gia hợp lệ')
+      return
     }
+
+    setParticipants(prev => [...prev, ...newParticipants])
+    setBulkParticipants('')
   }
 
   const generateTeams = () => {
@@ -123,7 +117,7 @@ export default function TeamGenerator() {
     }
 
     const shuffledParticipants = [...participants].sort(() => Math.random() - 0.5)
-    const newTeams: Team[] = Array.from({ length: numberOfTeams }, () => [])
+    let newTeams: Team[] = Array.from({ length: numberOfTeams }, () => [])
 
     // Distribute players evenly, ensuring minimal difference in team sizes
     const baseTeamSize = Math.floor(shuffledParticipants.length / numberOfTeams)
@@ -136,37 +130,42 @@ export default function TeamGenerator() {
       playerIndex += teamSize
     }
 
-    // Balance teams based on priorities
+    // Balance teams based on priorities with stricter point difference limit
     for (let i = 0; i < 1000; i++) {
       let improved = false
 
-      // 1. Balance total points
+      // 1. Check and fix total points difference (must be <= 2)
       const teamScores = newTeams.map(team => team.reduce((sum, p) => sum + p.skill, 0))
       const maxScore = Math.max(...teamScores)
       const minScore = Math.min(...teamScores)
 
-      if (maxScore - minScore > 1) {
+      if (maxScore - minScore > 2) {
+        // Stricter limit of 2 points difference
         const maxTeam = newTeams[teamScores.indexOf(maxScore)]
         const minTeam = newTeams[teamScores.indexOf(minScore)]
 
-        // Find the best pair of players to swap
+        // Find the best pair of players to swap that maintains position balance
         let bestSwap: [Participant, Participant] | null = null
         let bestScoreDiff = maxScore - minScore
 
         for (const playerFromMax of maxTeam) {
           for (const playerFromMin of minTeam) {
-            const newMaxScore = maxScore - playerFromMax.skill + playerFromMin.skill
-            const newMinScore = minScore - playerFromMin.skill + playerFromMax.skill
-            const newScoreDiff = Math.abs(newMaxScore - newMinScore)
+            // Only consider swapping players of the same position
+            if (playerFromMax.position === playerFromMin.position) {
+              const newMaxScore = maxScore - playerFromMax.skill + playerFromMin.skill
+              const newMinScore = minScore - playerFromMin.skill + playerFromMax.skill
+              const newScoreDiff = Math.abs(newMaxScore - newMinScore)
 
-            if (newScoreDiff < bestScoreDiff) {
-              bestScoreDiff = newScoreDiff
-              bestSwap = [playerFromMax, playerFromMin]
+              // Only accept swaps that improve the score difference
+              if (newScoreDiff < bestScoreDiff && newScoreDiff <= 2) {
+                bestScoreDiff = newScoreDiff
+                bestSwap = [playerFromMax, playerFromMin]
+              }
             }
           }
         }
 
-        // Perform the swap
+        // Perform the swap if it improves the balance
         if (bestSwap) {
           const [playerFromMax, playerFromMin] = bestSwap
           maxTeam.splice(maxTeam.indexOf(playerFromMax), 1, playerFromMin)
@@ -176,7 +175,7 @@ export default function TeamGenerator() {
         }
       }
 
-      // 2. Balance total number of people for each position
+      // 2. Balance positions while maintaining point difference limit
       const positions: Position[] = ['GK', 'CB', 'LM', 'RM', 'CM', 'ST']
       for (const position of positions) {
         const positionCounts = newTeams.map(team => team.filter(p => p.position === position).length)
@@ -186,60 +185,56 @@ export default function TeamGenerator() {
         if (maxCount - minCount > 1) {
           const maxTeam = newTeams[positionCounts.indexOf(maxCount)]
           const minTeam = newTeams[positionCounts.indexOf(minCount)]
-          const playerToMove = maxTeam.find(p => p.position === position)
-          const playerToSwap = minTeam.find(p => p.position !== position)
-          if (playerToMove && playerToSwap) {
-            maxTeam.splice(maxTeam.indexOf(playerToMove), 1, playerToSwap)
-            minTeam.splice(minTeam.indexOf(playerToSwap), 1, playerToMove)
-            improved = true
-            break
-          }
-        }
-      }
 
-      if (improved) continue
-
-      // 3. Balance total points for each position
-      for (const position of positions) {
-        const positionScores = newTeams.map(team =>
-          team.filter(p => p.position === position).reduce((sum, p) => sum + p.skill, 0)
-        )
-        const maxScore = Math.max(...positionScores)
-        const minScore = Math.min(...positionScores)
-
-        if (maxScore - minScore > 1) {
-          const maxTeam = newTeams[positionScores.indexOf(maxScore)]
-          const minTeam = newTeams[positionScores.indexOf(minScore)]
-
-          // Find the best pair of players to swap
-          let bestSwap: [Participant, Participant] | null = null
-          let bestScoreDiff = maxScore - minScore
-
+          // Find players to swap that won't exceed point difference limit
           for (const playerFromMax of maxTeam.filter(p => p.position === position)) {
-            for (const playerFromMin of minTeam.filter(p => p.position === position)) {
-              const newMaxScore = maxScore - playerFromMax.skill + playerFromMin.skill
-              const newMinScore = minScore - playerFromMin.skill + playerFromMax.skill
-              const newScoreDiff = Math.abs(newMaxScore - newMinScore)
+            for (const playerFromMin of minTeam.filter(p => p.position !== position)) {
+              const newMaxTeamScore =
+                maxTeam.reduce((sum, p) => sum + p.skill, 0) - playerFromMax.skill + playerFromMin.skill
+              const newMinTeamScore =
+                minTeam.reduce((sum, p) => sum + p.skill, 0) - playerFromMin.skill + playerFromMax.skill
 
-              if (newScoreDiff < bestScoreDiff) {
-                bestScoreDiff = newScoreDiff
-                bestSwap = [playerFromMax, playerFromMin]
+              if (Math.abs(newMaxTeamScore - newMinTeamScore) <= 2) {
+                maxTeam.splice(maxTeam.indexOf(playerFromMax), 1, playerFromMin)
+                minTeam.splice(minTeam.indexOf(playerFromMin), 1, playerFromMax)
+                improved = true
+                break
               }
             }
+            if (improved) break
           }
-
-          // Perform the swap
-          if (bestSwap) {
-            const [playerFromMax, playerFromMin] = bestSwap
-            maxTeam.splice(maxTeam.indexOf(playerFromMax), 1, playerFromMin)
-            minTeam.splice(minTeam.indexOf(playerFromMin), 1, playerFromMax)
-            improved = true
-            break
-          }
+          if (improved) break
         }
       }
 
-      if (!improved) break // If no improvements were made in this iteration, we're done
+      // If no improvements were made in this iteration, we're done
+      if (!improved) break
+    }
+
+    // Final check - if point difference is still > 2, try one more round of random swaps
+    const finalScores = newTeams.map(team => team.reduce((sum, p) => sum + p.skill, 0))
+    if (Math.max(...finalScores) - Math.min(...finalScores) > 2) {
+      for (let i = 0; i < 100; i++) {
+        const team1Index = Math.floor(Math.random() * numberOfTeams)
+        const team2Index = Math.floor(Math.random() * numberOfTeams)
+        if (team1Index === team2Index) continue
+
+        const player1Index = Math.floor(Math.random() * newTeams[team1Index].length)
+        const player2Index = Math.floor(Math.random() * newTeams[team2Index].length)
+
+        const tempTeams = newTeams.map(team => [...team])
+        const player1 = tempTeams[team1Index][player1Index]
+        const player2 = tempTeams[team2Index][player2Index]
+
+        tempTeams[team1Index][player1Index] = player2
+        tempTeams[team2Index][player2Index] = player1
+
+        const newScores = tempTeams.map(team => team.reduce((sum, p) => sum + p.skill, 0))
+        if (Math.max(...newScores) - Math.min(...newScores) <= 2) {
+          newTeams = tempTeams
+          break
+        }
+      }
     }
 
     setTeams(newTeams)
@@ -253,6 +248,7 @@ export default function TeamGenerator() {
       return { position: pos as Position, name, count, totalScore }
     })
   }
+
   const getPositionDisplay = (position: Position) => `${position} (${positionNames[position]})`
 
   useEffect(() => {
@@ -265,7 +261,7 @@ export default function TeamGenerator() {
     }
 
     window.addEventListener('resize', handleResize)
-    handleResize() // Initial call
+    handleResize()
 
     return () => window.removeEventListener('resize', handleResize)
   }, [numberOfTeams, teams])
@@ -276,13 +272,10 @@ export default function TeamGenerator() {
       return
     }
 
-    // Gọi hàm để thêm người chơi
     addParticipant(name, parseInt(skill), position)
-
-    // Đặt lại các giá trị
-    setName('') // Đặt lại giá trị input tên
-    setSkill('3') // Đặt lại giá trị kỹ năng về mặc định
-    setPosition('ST') // Đặt lại giá trị vị trí về mặc định
+    setName('')
+    setSkill('3')
+    setPosition('ST')
   }
 
   const getGridClassName = () => {
@@ -356,10 +349,10 @@ export default function TeamGenerator() {
                 placeholder={
                   'Sao chép và dán danh sách người chơi. Mỗi người chơi một dòng,\n' +
                   'Theo định dạng: Tên KỹNăng VịTrí\n' +
-                  'ví dụ: NguyenVanA 3 ST\n' +
-                  'hoặc NguyenVanA, 3, ST\n' +
-                  'hoặc NguyenVanA; 3; ST\n' +
-                  'hoặc NguyenVanA - 3 - ST'
+                  'ví dụ: Nguyễn Văn A 3 ST\n' +
+                  'hoặc Nguyễn Văn A, 3, ST\n' +
+                  'hoặc Nguyễn Văn A; 3; ST\n' +
+                  'hoặc Nguyễn Văn A - 3 - ST'
                 }
                 value={bulkParticipants}
                 onChange={e => setBulkParticipants(e.target.value)}
@@ -388,7 +381,10 @@ export default function TeamGenerator() {
                   <div className='text-center text-sm'>{index + 1}</div>
                   <Input
                     value={p.name}
-                    onChange={e => updateParticipant(index, 'name', e.target.value)}
+                    onChange={e => {
+                      const value = e.target.value
+                      updateParticipant(index, 'name', value)
+                    }}
                     className='h-8'
                   />
                   <Select
